@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conway's Game of Life - 3D</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+canvas { display: block; }
+#ui {
+position: absolute; top: 16px; left: 16px;
+background: rgba(10,10,20,0.85); border: 1px solid rgba(100,140,255,0.25);
+border-radius: 10px; padding: 18px 22px; color: #c8d0e0;
+backdrop-filter: blur(8px); min-width: 220px;
+}
+#ui h2 { font-size: 15px; margin-bottom: 12px; color: #7ea4ff; letter-spacing: 1px; }
+.row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.row label { font-size: 13px; }
+.row button, .row select {
+background: rgba(60,80,160,0.4); color: #c8d0e0; border: 1px solid rgba(100,140,255,0.3);
+border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+}
+.row button:hover { background: rgba(80,110,200,0.5); }
+.row button.active { background: rgba(80,130,255,0.6); border-color: #7ea4ff; }
+#stats { font-size: 12px; color: #8090b0; margin-top: 10px; border-top: 1px solid rgba(100,140,255,0.15); padding-top: 8px; }
+#stats span { color: #7ea4ff; }
+</style>
+</head>
+<body>
+<div id="ui">
+<h2>GAME OF LIFE 3D</h2>
+<div class="row">
+<label>Play / Pause</label>
+<button id="btnPlay" class="active">⏸ Pause</button>
+</div>
+<div class="row">
+<label>Step</label>
+<button id="btnStep">⏭ Step</button>
+</div>
+<div class="row">
+<label>Speed</label>
+<select id="selSpeed">
+<option value="200">Slow</option>
+<option value="100" selected>Normal</option>
+<option value="40">Fast</option>
+<option value="15">Max</option>
+</select>
+</div>
+<div class="row">
+<label>Grid Size</label>
+<select id="selSize">
+<option value="20">20 × 20</option>
+<option value="30" selected>30 × 30</option>
+<option value="40">40 × 40</option>
+<option value="50">50 × 50</option>
+</select>
+</div>
+<div class="row">
+<label>Randomize</label>
+<button id="btnRandom">🎲 Shuffle</button>
+</div>
+<div class="row">
+<label>Clear</label>
+<button id="btnClear">✕ Clear</button>
+</div>
+<div id="stats">
+Gen: <span id="stGen">0</span> &nbsp;|&nbsp; Alive: <span id="stAlive">0</span> &nbsp;|&nbsp; Pop: <span id="stPop">0</span>%
+</div>
+</div>
+
+<script type="importmap">
+{
+"imports": {
+"three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+}
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0a0f, 0.012);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(0, 35, 35);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI / 2.1;
+controls.minDistance = 10;
+controls.maxDistance = 120;
+
+scene.add(new THREE.AmbientLight(0x334466, 0.8));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(10, 20, 10);
+scene.add(dirLight);
+const ptLight = new THREE.PointLight(0x4466ff, 1.5, 80);
+ptLight.position.set(-15, 15, -15);
+scene.add(ptLight);
+
+let gridSize = 30;
+let grid = [];
+let gen = 0;
+let running = true;
+let speed = 100;
+let lastTick = 0;
+let meshes = [];
+let glowMeshes = [];
+const aliveMat = new THREE.MeshStandardMaterial({
+color: 0x4488ff, emissive: 0x2244aa, emissiveIntensity: 0.6,
+roughness: 0.3, metalness: 0.4
+});
+const deadMat = new THREE.MeshStandardMaterial({
+color: 0x1a1a2e, emissive: 0x000000, emissiveIntensity: 0,
+roughness: 0.8, metalness: 0.1
+});
+const glowMat = new THREE.MeshBasicMaterial({
+color: 0x4488ff, transparent: true, opacity: 0.12
+});
+const boxGeo = new THREE.BoxGeometry(0.92, 0.92, 0.92);
+const glowGeo = new THREE.BoxGeometry(1.1, 0.3, 1.1);
+
+function initGrid() {
+const half = Math.floor(gridSize / 2);
+while (meshes.length) {
+scene.remove(meshes[0]);
+scene.remove(glowMeshes[0]);
+meshes[0].geometry?.dispose();
+glowMeshes[0].geometry?.dispose();
+meshes.shift();
+glowMeshes.shift();
+}
+grid = [];
+gen = 0;
+for (let x = 0; x < gridSize; x++) {
+grid[x] = [];
+meshes[x] = [];
+glowMeshes[x] = [];
+for (let y = 0; y < gridSize; y++) {
+const alive = Math.random() < 0.35;
+grid[x][y] = alive ? 1 : 0;
+const mesh = new THREE.Mesh(boxGeo, alive ? aliveMat.clone() : deadMat.clone());
+mesh.position.set(x - half, 0, y - half);
+scene.add(mesh);
+meshes[x][y] = mesh;
+const glow = new THREE.Mesh(glowGeo, glowMat.clone());
+glow.position.set(x - half, -0.6, y - half);
+glow.visible = alive;
+scene.add(glow);
+glowMeshes[x][y] = glow;
+}
+}
+updateStats();
+}
+
+function countNeighbors(gx, gy) {
+let count = 0;
+for (let dx = -1; dx <= 1; dx++) {
+for (let dy = -1; dy <= 1; dy++) {
+if (dx === 0 && dy === 0) continue;
+const nx = (gx + dx + gridSize) % gridSize;
+const ny = (gy + dy + gridSize) % gridSize;
+count += grid[nx][ny];
+}
+}
+return count;
+}
+
+function step() {
+const next = [];
+for (let x = 0; x < gridSize; x++) {
+next[x] = [];
+for (let y = 0; y < gridSize; y++) {
+const n = countNeighbors(x, y);
+const alive = grid[x][y];
+next[x][y] = (alive && (n === 2 || n === 3)) || (!alive && n === 3) ? 1 : 0;
+}
+}
+grid = next;
+gen++;
+updateMeshes();
+updateStats();
+}
+
+function updateMeshes() {
+const half = Math.floor(gridSize / 2);
+for (let x = 0; x < gridSize; x++) {
+for (let y = 0; y < gridSize; y++) {
+const cell = grid[x][y];
+const mesh = meshes[x][y];
+const glow = glowMeshes[x][y];
+if (cell) {
+mesh.material.color.setHex(0x4488ff);
+mesh.material.emissive.setHex(0x2244aa);
+mesh.material.emissiveIntensity = 0.6;
+mesh.material.roughness = 0.3;
+mesh.material.metalness = 0.4;
+glow.visible = true;
+glow.material.opacity = 0.12;
+} else {
+mesh.material.color.setHex(0x1a1a2e);
+mesh.material.emissive.setHex(0x000000);
+mesh.material.emissiveIntensity = 0;
+mesh.material.roughness = 0.8;
+mesh.material.metalness = 0.1;
+glow.visible = false;
+}
+}
+}
+}
+
+function updateStats() {
+let alive = 0;
+for (let x = 0; x < gridSize; x++)
+for (let y = 0; y < gridSize; y++)
+alive += grid[x][y];
+document.getElementById('stGen').textContent = gen;
+document.getElementById('stAlive').textContent = alive;
+document.getElementById('stPop').textContent = (alive / (gridSize * gridSize) * 100).toFixed(1);
+}
+
+// Ground plane
+const groundGeo = new THREE.PlaneGeometry(200, 200);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0f, roughness: 1 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.95;
+scene.add(ground);
+
+// Grid lines
+const gridHelper = new THREE.GridHelper(gridSize, gridSize, 0x1a1a3e, 0x111128);
+gridHelper.position.y = -0.9;
+scene.add(gridHelper);
+
+initGrid();
+
+// Controls
+document.getElementById('btnPlay').addEventListener('click', () => {
+running = !running;
+const btn = document.getElementById('btnPlay');
+btn.textContent = running ? '⏸ Pause' : '▶ Play';
+btn.classList.toggle('active', running);
+});
+document.getElementById('btnStep').addEventListener('click', () => {
+running = false;
+document.getElementById('btnPlay').textContent = '▶ Play';
+document.getElementById('btnPlay').classList.remove('active');
+step();
+});
+document.getElementById('selSpeed').addEventListener('change', (e) => { speed = +e.target.value; });
+document.getElementById('selSize').addEventListener('change', (e) => {
+gridSize = +e.target.value;
+initGrid();
+const half = Math.floor(gridSize / 2);
+gridHelper.clear();
+const gh = new THREE.GridHelper(gridSize, gridSize, 0x1a1a3e, 0x111128);
+gh.position.y = -0.9;
+scene.add(gh);
+camera.position.set(0, half * 1.4, half * 1.4);
+});
+document.getElementById('btnRandom').addEventListener('click', () => { initGrid(); });
+document.getElementById('btnClear').addEventListener('click', () => {
+for (let x = 0; x < gridSize; x++)
+for (let y = 0; y < gridSize; y++)
+grid[x][y] = 0;
+gen = 0;
+updateMeshes();
+updateStats();
+});
+
+// Raycasting for click-to-toggle
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+renderer.domElement.addEventListener('dblclick', (e) => {
+mouse.x = (e.clientX / innerWidth) * 2 - 1;
+mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+raycaster.setFromCamera(mouse, camera);
+const intersects = raycaster.intersectObjects(meshes.flat());
+if (intersects.length) {
+const mesh = intersects[0].object;
+for (let x = 0; x < gridSize; x++) {
+for (let y = 0; y < gridSize; y++) {
+if (meshes[x][y] === mesh) {
+grid[x][y] = grid[x][y] ? 0 : 1;
+updateMeshes();
+updateStats();
+return;
+}
+}
+}
+}
+});
+
+window.addEventListener('resize', () => {
+camera.aspect = innerWidth / innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(innerWidth, innerHeight);
+});
+
+function animate(time) {
+requestAnimationFrame(animate);
+controls.update();
+if (running && time - lastTick > speed) {
+step();
+lastTick = time;
+}
+// Subtle color pulse for alive cells
+const pulse = 0.5 + 0.1 * Math.sin(time * 0.003);
+for (let x = 0; x < gridSize; x++) {
+for (let y = 0; y < gridSize; y++) {
+if (grid[x][y]) {
+meshes[x][y].material.emissiveIntensity = pulse;
+}
+}
+}
+renderer.render(scene, camera);
+}
+animate(0);
+</script>
+</body>
+</html>
